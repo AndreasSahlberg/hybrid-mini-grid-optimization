@@ -3,7 +3,6 @@ import logging
 import pandas as pd
 import numba
 from numba import prange
-import jupyter
 
 
 logging.basicConfig(format='%(asctime)s\t\t%(message)s', level=logging.ERROR)
@@ -132,7 +131,7 @@ def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_
 
 @numba.njit
 def unmet_demand_and_excess_gen(unmet_demand, soc, n_dis, battery_size, n_chg, excess_gen, dod,
-                                hour, battery_life, dod_max, battery_use, remaining_load):
+                                hour, dod_max, battery_use, remaining_load):
 
     if battery_size > 0:
         if soc < 0:
@@ -155,15 +154,12 @@ def unmet_demand_and_excess_gen(unmet_demand, soc, n_dis, battery_size, n_chg, e
     if 1 - soc > dod:
         dod = 1 - soc
 
-    if hour == 23:  # The battery wear during the last day is calculated
-        battery_life = battery_life + battery_use / (531.52764 * max(0.1, dod * dod_max) ** -1.12297)
-
-    return unmet_demand, soc, excess_gen, dod,  battery_life
+    return unmet_demand, soc, excess_gen, dod
 
 
 @numba.njit
 def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, inv_eff, n_dis, n_chg, dod_max,
-                        energy_per_hh):
+                        energy_per_hh, full_life_cycles):
     fuel_result = 0
     battery_life = 0
     soc = 0.5
@@ -191,11 +187,10 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
                                                                               battery_use, soc, hour, dod)
             annual_battery_use += hourly_battery_use
 
-        unmet_demand, soc, excess_gen, dod, battery_life = unmet_demand_and_excess_gen(unmet_demand, soc, n_dis,
+        unmet_demand, soc, excess_gen, dod = unmet_demand_and_excess_gen(unmet_demand, soc, n_dis,
                                                                                        battery_size, n_chg,
                                                                                        excess_gen, dod, hour,
-                                                                                       battery_life, dod_max,
-                                                                                       battery_use, load)
+                                                                                       dod_max, battery_use, load)
 
         soc_array.append(soc)
         diesel_gen_curve.append(diesel_gen)
@@ -203,17 +198,14 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
         battery_soc_curve.append(soc)
 
     if (battery_size > 0) & (annual_battery_use > 0):
-        battery_life_simple = round(3400 / annual_battery_use)  # Optimum case, 2500
+        battery_life_simple = round(full_life_cycles / annual_battery_use)  # Optimum case, 2500
         battery_life_simple = min(battery_life_simple, 20)
     else:
         battery_life_simple = 20
 
     condition = unmet_demand / energy_per_hh  # LPSP is calculated
     excess_gen = excess_gen / energy_per_hh
-    battery_life = round(1 / battery_life)
     diesel_share = annual_diesel_gen / energy_per_hh
-
-    battery_life = min(battery_life, 20)
 
     return diesel_share, battery_life_simple, condition, fuel_result, excess_gen, battery_soc_curve, diesel_gen_curve
 
@@ -223,14 +215,15 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
                           fuel_usage, pv_panel_size, pv_cost, charge_controller, pv_om, diesel_capacity, diesel_cost,
                           diesel_om, inverter_life, load_curve, inverter_cost, diesel_life, pv_life, battery_life,
                           battery_size, battery_cost, dod_max, discount_rate):
+
     # Necessary information for calculation of LCOE is defined
     project_life = end_year - start_year
     generation = np.ones(project_life) * energy_per_hh
     generation[0] = 0
 
     # Calculate LCOE
-    sum_el_gen = 0  # np.zeros((len(battery_sizes), pv_no, diesel_no))
-    investment = 0  # np.zeros((len(battery_sizes), pv_no, diesel_no))
+    sum_el_gen = 0
+    investment = 0
     sum_costs = 0
     total_battery_investment = 0
     total_fuel_cost = 0
@@ -282,7 +275,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
 def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
                            energy_per_hh, diesel_price, end_year, start_year, pv_cost, charge_controller, pv_om,
                            diesel_cost, diesel_om, inverter_life, inverter_cost, diesel_life, pv_life, battery_cost,
-                           discount_rate, lpsp_max, diesel_limit, simple=True, for_plots=False):
+                           discount_rate, lpsp_max, diesel_limit, full_life_cycles, simple=True, for_plots=False):
 
     pv = configuration[0]
     battery = configuration[1]
@@ -293,7 +286,7 @@ def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, i
     # For the number of diesel, pv and battery capacities the lpsp, battery lifetime, fuel usage and LPSP is calculated
     diesel_share, battery_life, lpsp, fuel_usage, excess_gen, battery_soc_curve, diesel_gen_curve = \
         hourly_optimization(battery, diesel, net_load, hour_numbers, inv_eff, n_dis, n_chg,
-                            dod_max, energy_per_hh)
+                            dod_max, energy_per_hh, full_life_cycles)
     if battery == 0:
         battery_life = 1
     else:
@@ -368,10 +361,6 @@ def pv_diesel_hybrid(
         start_year,
         end_year,
         diesel_price,
-        chg_max=1,  # Max share of battery capacity that can be charged in one hour
-        dschg_max=1,  # Max share of battery capacity that can be discharged in one hour
-        kibam_c=0,  #  c parameter of KiBaM model (if 0, KiBaM will not be used)
-        kibam_k=0,  # k parameter of KiBaM model (if 0, KiBaM will not be used)
         max_cycles=950,  # cycles to failure at dod_max
         dod_max=0.9,  # maximum depth of discharge of battery
         diesel_cost=565,  # diesel generator capital cost, USD/kW rated power  # ToDo check
