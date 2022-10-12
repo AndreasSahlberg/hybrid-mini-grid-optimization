@@ -1,35 +1,22 @@
 import numpy as np
 import logging
 import pandas as pd
-import os
 import numba
 from numba import prange
-import math
-import rainflow
+import jupyter
+
 
 logging.basicConfig(format='%(asctime)s\t\t%(message)s', level=logging.ERROR)
 
 
-def read_environmental_data(path):
-    # ghi_curve = pd.read_csv(path, usecols=[3], skiprows=341882)
-    # temp = pd.read_csv(path, usecols=[2], skiprows=341882)
-
-    #ghi_curve = pd.read_csv(path, skiprows=341882)
-    #temp = pd.read_csv(path, skiprows=341882)
-
-    #ghi_curve = ghi_curve.iloc[:, 3].values
-    #temp = temp.iloc[:, 2].values
-
-    #ghi_curve = pd.read_csv(path, usecols=[1], skiprows=0).values
-    #temp = pd.read_csv(path, usecols=[2], skiprows=0).values
-
-    ghi_curve = pd.read_csv(path, skiprows=24)
-    temp = ghi_curve.iloc[:, 2].values
-    ghi_curve = ghi_curve.iloc[:, 1].values
+def read_environmental_data(path, skiprows=24, skipcols=1):
+    data = pd.read_csv(path, skiprows=skiprows)
+    ghi_curve = data.iloc[:, 0 + skipcols].values
+    temp = data.iloc[:, 1 + skipcols].values
     return ghi_curve, temp
 
 
-@numba.njit  # ToDo ensure works with battery_size = 0
+@numba.njit
 def self_discharge(battery_use, soc):
     # Battery self-discharge (0.02% per hour)
     return battery_use + 0.0002 * soc, soc - 0.0002 * soc
@@ -50,33 +37,18 @@ def diesel_dispatch(hour, net_load, diesel_capacity, fuel_result, annual_diesel_
                     battery_size,
                     chg_max=1,  # Max share of battery capacity that can be charged in one hour
                     dschg_max=1,  # Max share of battery capacity that can be discharged in one hour
-                    kibam_c=0,  #  c parameter of KiBaM model (if 0, KiBaM will not be used)
-                    kibam_k=0,  # k parameter of KiBaM model (if 0, KiBaM will not be used)
-                    q1=0.5,
-                    q2=0.5,
-                    ):  # cycles to failure at dod_max):
+                    ):
     # Below is the dispatch strategy for the diesel generator as described in word document
-    k = kibam_k
-    c = kibam_c
 
     battery_dispatchable = soc * battery_size * n_dis * inv_eff
     max_discharge_simple = dschg_max * battery_size
-    if (kibam_c > 0) & (kibam_k > 0):
-        max_discharge_kibam = battery_size
-        # max_discharge_kibam = (k * q1 * math.exp(-k) + (q1 + q2) * k * c * (1 - math.exp(-k))) / (1 - math.exp(-k) + c (k - 1 + math.exp(-k)))
-    else:
-        max_discharge_kibam = battery_size
 
-    battery_dispatchable = min(battery_dispatchable, max_discharge_simple, max_discharge_kibam)
+    battery_dispatchable = min(battery_dispatchable, max_discharge_simple)
 
     battery_chargeable = (1 - soc) * battery_size / n_chg / inv_eff
     max_charge_simple = chg_max * battery_size
-    if (kibam_c > 0) & (kibam_k > 0):
-        max_charge_kibam = battery_size
-        #max_charge_kibam = (- k * c * battery_size + k * q1 * math.exp(-k) + (q1 + q2) * k * c * (1 - math.exp(-k))) / (1 - math.exp(-k) + c (k - 1 + math.exp(-k)))
-    else:
-        max_charge_kibam = battery_size
-    battery_chargeable = min(battery_chargeable, max_charge_simple, max_charge_kibam)
+
+    battery_chargeable = min(battery_chargeable, max_charge_simple)
 
     if 4 < hour <= 17:
         # During the morning and day, the batteries are dispatched primarily.
@@ -108,7 +80,7 @@ def diesel_dispatch(hour, net_load, diesel_capacity, fuel_result, annual_diesel_
         # During night, batteries are dispatched primarily.
         # The diesel generator is used at max_diesel if load is larger than battery capacity
 
-        #  Maximum amount of diesel needed to supply load and charge battery
+        # Maximum amount of diesel needed to supply load and charge battery
         # Diesel genrator limited by lowest possible capacity (40%) and rated capacity
         max_diesel = max(min(net_load + battery_chargeable, diesel_capacity), 0.4 * diesel_capacity)
 
@@ -119,24 +91,12 @@ def diesel_dispatch(hour, net_load, diesel_capacity, fuel_result, annual_diesel_
 
     if diesel_gen > 0:
         fuel_result = fuel_result + diesel_capacity * 0.08145 + diesel_gen * 0.246
-    # else:
-    #     fuel_result = 0
-
-    # annual_diesel_gen = annual_diesel_gen + diesel_gen
-
-    # Reamining load after diesel generator
-    # net_load = net_load - diesel_gen
 
     return fuel_result, annual_diesel_gen + diesel_gen, diesel_gen, net_load - diesel_gen
 
 
 @numba.njit
-def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_chg, battery_use, soc, hour, dod,
-                          kibam_c=0,  # c parameter of KiBaM model (if 0, KiBaM will not be used)
-                          kibam_k=0,  # k parameter of KiBaM model (if 0, KiBaM will not be used)
-                          q1=0.5,
-                          q2=0.5
-                          ):
+def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_chg, battery_use, soc, hour, dod):
 
     hourly_battery_use = 0
     soc_prev = soc
@@ -170,7 +130,7 @@ def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_
     return battery_use, soc, dod, hourly_battery_use
 
 
-@numba.njit  # ToDo ensure works with battery_size = 0
+@numba.njit
 def unmet_demand_and_excess_gen(unmet_demand, soc, n_dis, battery_size, n_chg, excess_gen, dod,
                                 hour, battery_life, dod_max, battery_use, remaining_load):
 
@@ -200,6 +160,7 @@ def unmet_demand_and_excess_gen(unmet_demand, soc, n_dis, battery_size, n_chg, e
 
     return unmet_demand, soc, excess_gen, dod,  battery_life
 
+
 @numba.njit
 def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, inv_eff, n_dis, n_chg, dod_max,
                         energy_per_hh):
@@ -217,7 +178,6 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
     diesel_gen_curve = []
     battery_soc_curve = []
 
-
     for hour in hour_numbers:
         load = net_load[int(hour)]
 
@@ -228,7 +188,7 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
                                                                            n_chg, battery_size)
         if battery_size > 0:
             battery_use, soc, dod, hourly_battery_use = soc_and_battery_usage(load, diesel_gen, n_dis, inv_eff, battery_size, n_chg,
-                                                          battery_use, soc, hour, dod)
+                                                                              battery_use, soc, hour, dod)
             annual_battery_use += hourly_battery_use
 
         unmet_demand, soc, excess_gen, dod, battery_life = unmet_demand_and_excess_gen(unmet_demand, soc, n_dis,
@@ -243,7 +203,7 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
         battery_soc_curve.append(soc)
 
     if (battery_size > 0) & (annual_battery_use > 0):
-        battery_life_simple = round(3400 / annual_battery_use) # Optimum case, 2500
+        battery_life_simple = round(3400 / annual_battery_use)  # Optimum case, 2500
         battery_life_simple = min(battery_life_simple, 20)
     else:
         battery_life_simple = 20
@@ -252,9 +212,6 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
     excess_gen = excess_gen / energy_per_hh
     battery_life = round(1 / battery_life)
     diesel_share = annual_diesel_gen / energy_per_hh
-
-    if battery_size > 0:
-        hej = 1
 
     battery_life = min(battery_life, 20)
 
@@ -272,7 +229,6 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
     generation[0] = 0
 
     # Calculate LCOE
-    #sum_costs = np.zeros((len(battery_sizes), pv_no, diesel_no))
     sum_el_gen = 0  # np.zeros((len(battery_sizes), pv_no, diesel_no))
     investment = 0  # np.zeros((len(battery_sizes), pv_no, diesel_no))
     sum_costs = 0
@@ -281,7 +237,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
     total_om_cost = 0
 
     for year in prange(project_life + 1):
-        salvage = 0  #np.zeros((len(battery_sizes), pv_no, diesel_no))
+        salvage = 0
         inverter_investment = 0
         diesel_investment = 0
         pv_investment = 0
@@ -321,6 +277,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
 
     return sum_costs / sum_el_gen, investment, total_battery_investment, total_fuel_cost, total_om_cost
 
+
 # @numba.njit
 def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
                            energy_per_hh, diesel_price, end_year, start_year, pv_cost, charge_controller, pv_om,
@@ -330,8 +287,6 @@ def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, i
     pv = configuration[0]
     battery = configuration[1]
     diesel = configuration[2]
-
-    # diesel = round(diesel * 2) / 2
 
     net_load, pv_gen = pv_generation(temp, ghi, pv, load_curve, inv_eff)
 
