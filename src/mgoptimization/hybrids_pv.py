@@ -8,7 +8,7 @@ import json
 import time
 
 
-def get_pv_data(latitude, longitude, token, output_folder='None'):
+def get_pv_data(latitude, longitude, token, output_folder='None'):  # ToDo update to require  output folder
     api_base = 'https://www.renewables.ninja/api/'
     s = requests.session()
     # Send token header with each request
@@ -69,7 +69,7 @@ def get_pv_data(latitude, longitude, token, output_folder='None'):
     df_out.to_csv(out_path)
 
 
-def read_environmental_data(path, skiprows=24, skipcols=1):
+def read_environmental_data(path, skiprows=24, skipcols=1): # ToDo update skipcols or index in get_pv_data
     data = pd.read_csv(path, skiprows=skiprows)
     ghi_curve = data.iloc[:, 0 + skipcols].values
     temp = data.iloc[:, 1 + skipcols].values
@@ -332,7 +332,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
     return sum_costs / sum_el_gen, investment, total_battery_investment, total_fuel_cost, total_om_cost
 
 
-@numba.njit
+# @numba.njit
 def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
                            energy_per_hh, diesel_price, end_year, start_year, pv_cost, charge_controller, pv_om,
                            diesel_cost, diesel_om, inverter_life, inverter_cost, diesel_life, pv_life, battery_cost,

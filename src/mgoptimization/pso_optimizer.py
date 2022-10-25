@@ -1,4 +1,7 @@
-from hybrids_pv import *
+try:
+    from hybrids_pv import *
+except ModuleNotFoundError:
+    from mgoptimization.hybrids_pv import *
 import pyswarms as ps
 import numpy as np
 
