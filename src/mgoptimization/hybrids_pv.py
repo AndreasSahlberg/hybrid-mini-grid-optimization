@@ -1,11 +1,72 @@
 import numpy as np
-import logging
 import pandas as pd
 import numba
 from numba import prange
+import requests
+import os
+import json
+import time
 
 
-logging.basicConfig(format='%(asctime)s\t\t%(message)s', level=logging.ERROR)
+def get_pv_data(latitude, longitude, token, output_folder='None'):
+    api_base = 'https://www.renewables.ninja/api/'
+    s = requests.session()
+    # Send token header with each request
+    s.headers = {'Authorization': 'Token ' + token}
+
+    if output_folder == 'None':
+        out_dir = os.getcwd() + '/../../pv_data'
+
+        try:
+            os.mkdir(out_dir)
+        except FileExistsError:
+            pass
+    else:
+        out_dir = output_folder
+
+    out_path = os.path.join(out_dir, 'pv_data_lat_{}_long_{}.csv'.format(latitude, longitude))
+
+    url = api_base + 'data/pv'
+
+    args = {
+        'lat': latitude,
+        'lon': longitude,
+        'date_from': '2020-01-01',
+        'date_to': '2020-12-31',
+        'dataset': 'merra2',
+        'capacity': 1.0,
+        'system_loss': 0.1,
+        'tracking': 0,
+        'tilt': 35,
+        'azim': 180,
+        'format': 'json',
+        'local_time': True,
+        'raw': True
+    }
+
+    try:
+        r = s.get(url, params=args)
+
+        # Parse JSON to get a pandas.DataFrame of data and dict of metadata
+        parsed_response = json.loads(r.text)
+
+    except json.decoder.JSONDecodeError:
+        print('API maximum hourly requests reached, waiting one hour', time.ctime())
+        time.sleep(3700)
+        print('Wait over, resuming API requests', time.ctime())
+        r = s.get(url, params=args)
+
+        # Parse JSON to get a pandas.DataFrame of data and dict of metadata
+        parsed_response = json.loads(r.text)
+
+    data = pd.read_json(json.dumps(parsed_response['data']), orient='index')
+
+    df_out = pd.DataFrame(columns=['time', 'ghi', 'temp'])
+    df_out['ghi'] = (data['irradiance_direct'] + data['irradiance_diffuse']) * 1000
+    df_out['temp'] = data['temperature']
+    df_out['time'] = data['local_time']
+
+    df_out.to_csv(out_path)
 
 
 def read_environmental_data(path, skiprows=24, skipcols=1):
@@ -31,7 +92,7 @@ def pv_generation(temp, ghi, pv_capacity, load, inv_eff):
     return net_load, pv_gen
 
 
-@numba.njit  # ToDo ensure works with battery_size = 0
+@numba.njit
 def diesel_dispatch(hour, net_load, diesel_capacity, fuel_result, annual_diesel_gen, soc, inv_eff, n_dis, n_chg,
                     battery_size,
                     chg_max=1,  # Max share of battery capacity that can be charged in one hour
@@ -271,7 +332,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
     return sum_costs / sum_el_gen, investment, total_battery_investment, total_fuel_cost, total_om_cost
 
 
-# @numba.njit
+@numba.njit
 def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
                            energy_per_hh, diesel_price, end_year, start_year, pv_cost, charge_controller, pv_om,
                            diesel_cost, diesel_om, inverter_life, inverter_cost, diesel_life, pv_life, battery_cost,
