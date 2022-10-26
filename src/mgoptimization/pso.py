@@ -1,5 +1,5 @@
-from mgoptimization.hybrid import *
-#from src.mgoptimization.hybrid import *
+from mgoptimization.hybrids import *
+#from src.mgoptimization.hybrids import *
 import pyswarms as ps
 import numpy as np
 

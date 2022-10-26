@@ -172,7 +172,7 @@ def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_
         dod = 0  # ToDo check
 
     if net_load > 0:
-        hourly_battery_use = min(net_load / n_dis / battery_size, soc_prev) * battery_size
+        hourly_battery_use = min(net_load / n_dis / battery_size, soc_prev)
         battery_use = battery_use + min(net_load / n_dis / battery_size, soc_prev)
     else:
         battery_use = battery_use + min(0, soc)  # Unneccessary?
