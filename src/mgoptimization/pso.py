@@ -80,6 +80,7 @@ def optimizer(diesel_price,
             'investment_cost': swarm_out[3], 'annual_fuel_cost': swarm_out[4], 'annual_om_cost': swarm_out[5],
             'battery_capacity': swarm_out[6], 'battery_life': swarm_out[7], 'pv_capacity': swarm_out[8],
             'diesel_gen_capacity': swarm_out[9], 'load_curve': swarm_out[10], 'hourly_pv_gen': swarm_out[11],
-            'battery_hourly_soc': swarm_out[12], 'hourly_diesel_gen': swarm_out[13], 'hourly_battery_usage': swarm_out[14]}
+            'battery_hourly_soc': swarm_out[12], 'hourly_diesel_gen': swarm_out[13], 'hourly_battery_usage': swarm_out[14],
+            'npc': swarm_out[15]}
 
 

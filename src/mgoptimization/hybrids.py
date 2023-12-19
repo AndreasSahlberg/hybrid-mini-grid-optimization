@@ -167,15 +167,15 @@ def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_
             soc = soc - net_load * n_chg / battery_size
 
     # The amount of battery discharge in the hour is stored (measured in State Of Charge)
-    if hour == 0:
-        battery_use = 0
-        dod = 0  # ToDo check
+    # if hour == 0: # ToDo check
+    #     battery_use = 0
+    #     dod = 0  # ToDo check
 
     if net_load > 0:
         hourly_battery_use = min(net_load / n_dis / battery_size, soc_prev)
         battery_use = battery_use + min(net_load / n_dis / battery_size, soc_prev)
-    else:
-        battery_use = battery_use + min(0, soc)  # Unneccessary?
+    # else:
+    #     battery_use = battery_use + min(0, soc)  # Unneccessary?
 
     return battery_use, soc, dod, hourly_battery_use
 
@@ -201,7 +201,7 @@ def unmet_demand_and_excess_gen(unmet_demand, soc, n_dis, battery_size, n_chg, e
         if remaining_load < 0:
             excess_gen = excess_gen - remaining_load
 
-    # If he depth of discharge in the hour is lower than...
+    # If the depth of discharge in the hour is lower than...
     if 1 - soc > dod:
         dod = 1 - soc
 
@@ -280,6 +280,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
     total_battery_investment = 0
     total_fuel_cost = 0
     total_om_cost = 0
+    npc = 0
 
     for year in prange(project_life + 1):
         salvage = 0
@@ -306,7 +307,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
         if year == project_life:
             salvage = (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size / dod_max + \
                       (1 - (project_life % diesel_life) / diesel_life) * diesel_capacity * diesel_cost + \
-                      (1 - (project_life % pv_life) / pv_life) * pv_panel_size * (pv_cost + charge_controller) + \
+                      (1 - (project_life % pv_life) / pv_life) * pv_panel_size * (pv_cost + charge_controller + inverter_cost) + \
                       (1 - (project_life % inverter_life) / inverter_life) * max(load_curve) * inverter_cost
 
             total_battery_investment -= (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size / dod_max
@@ -314,13 +315,16 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
         investment += diesel_investment + pv_investment + battery_investment + inverter_investment - salvage
         total_battery_investment += battery_investment
 
-        sum_costs += (fuel_costs + om_costs + battery_investment + diesel_investment + pv_investment - salvage) / (
-                (1 + discount_rate) ** year)
+        sum_costs += (fuel_costs + om_costs + battery_investment + diesel_investment + pv_investment + inverter_investment - salvage) / (
+                      (1 + discount_rate) ** year)
+
+        npc += (fuel_costs + om_costs + battery_investment + diesel_investment + pv_investment + inverter_investment) / (
+                       (1 + discount_rate) ** year)
 
         if year > 0:
             sum_el_gen += energy_per_hh / ((1 + discount_rate) ** year)
 
-    return sum_costs / sum_el_gen, investment, total_battery_investment, total_fuel_cost, total_om_cost
+    return sum_costs / sum_el_gen, investment, total_battery_investment, total_fuel_cost, total_om_cost, npc
 
 
 def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
@@ -349,8 +353,9 @@ def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, i
         investment = 0
         fuel_cost = 0
         om_cost = 0
+        npc = 0
     else:
-        lcoe, investment, battery_investment, fuel_cost, om_cost = calculate_hybrid_lcoe(diesel_price=diesel_price,
+        lcoe, investment, battery_investment, fuel_cost, om_cost, npc = calculate_hybrid_lcoe(diesel_price=diesel_price,
                                                                                          end_year=end_year,
                                                                                          start_year=start_year,
                                                                                          energy_per_hh=energy_per_hh,
@@ -377,7 +382,7 @@ def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, i
         return lcoe
     else:
         return lcoe, lpsp, diesel_share, investment, fuel_cost, om_cost, battery, battery_life, pv, diesel, \
-               load_curve, pv_gen, battery_soc_curve, diesel_gen_curve, hourly_battery_usage
+               load_curve, pv_gen, battery_soc_curve, diesel_gen_curve, hourly_battery_usage, npc
 
 @numba.njit
 def calc_load_curve(tier, energy_per_hh):
