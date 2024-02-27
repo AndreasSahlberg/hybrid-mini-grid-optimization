@@ -6,6 +6,7 @@ import requests
 import os
 import json
 import time
+from io import StringIO
 
 
 def get_pv_data(latitude, longitude, token, output_folder):
@@ -34,36 +35,48 @@ def get_pv_data(latitude, longitude, token, output_folder):
         'raw': True
     }
 
-    try:
-        r = s.get(url, params=args)
+    if token != '':
 
-        # Parse JSON to get a pandas.DataFrame of data and dict of metadata
-        parsed_response = json.loads(r.text)
+        try:
+            r = s.get(url, params=args)
 
-    except json.decoder.JSONDecodeError:
-        print('API maximum hourly requests reached, waiting one hour', time.ctime())
-        time.sleep(3700)
-        print('Wait over, resuming API requests', time.ctime())
-        r = s.get(url, params=args)
+            # Parse JSON to get a pandas.DataFrame of data and dict of metadata
+            parsed_response = json.loads(r.text)
 
-        # Parse JSON to get a pandas.DataFrame of data and dict of metadata
-        parsed_response = json.loads(r.text)
+        except json.decoder.JSONDecodeError:
+            print('API maximum hourly requests reached, waiting one hour', time.ctime())
+            time.sleep(3700)
+            print('Wait over, resuming API requests', time.ctime())
+            r = s.get(url, params=args)
 
-    data = pd.read_json(json.dumps(parsed_response['data']), orient='index')
+            # Parse JSON to get a pandas.DataFrame of data and dict of metadata
+            parsed_response = json.loads(r.text)
 
-    df_out = pd.DataFrame(columns=['time', 'ghi', 'temp'])
-    df_out['ghi'] = (data['irradiance_direct'] + data['irradiance_diffuse']) * 1000
-    df_out['temp'] = data['temperature']
-    df_out['time'] = data['local_time']
+        data = pd.read_json(StringIO(json.dumps(parsed_response['data'])), orient='index')
 
-    df_out.to_csv(out_path, index=False)
+        df_out = pd.DataFrame(columns=['time', 'ghi', 'temp'])
+        df_out['ghi'] = (data['irradiance_direct'] + data['irradiance_diffuse']) * 1000
+        df_out['temp'] = data['temperature']
+        df_out['time'] = data['local_time']
+
+        df_out.to_csv(out_path, index=False)
+    else:
+        print('No token provided')
 
 
 def read_environmental_data(path, skiprows=24, skipcols=1):
-    data = pd.read_csv(path, skiprows=skiprows)
-    ghi_curve = data.iloc[:, 0 + skipcols].values
-    temp = data.iloc[:, 1 + skipcols].values
-    return ghi_curve, temp
+    """
+    This method reads the solar resource GHI and temperature for each hour during one year from a csv-file.
+    The skiprows and skipcolumns define which rows and columns the data should be read from.
+    """
+    try:
+        data = pd.read_csv(path, skiprows=skiprows)
+        ghi_curve = data.iloc[:, 0 + skipcols].values
+        temp = data.iloc[:, 1 + skipcols].values
+
+        return ghi_curve, temp
+    except:
+        print('Could not read data, try changing which columns and rows ro read')
 
 
 @numba.njit
@@ -92,12 +105,10 @@ def diesel_dispatch(hour, net_load, diesel_capacity, fuel_result, annual_diesel_
 
     battery_dispatchable = soc * battery_size * n_dis * inv_eff
     max_discharge_simple = dschg_max * battery_size
-
     battery_dispatchable = min(battery_dispatchable, max_discharge_simple)
 
     battery_chargeable = (1 - soc) * battery_size / n_chg / inv_eff
     max_charge_simple = chg_max * battery_size
-
     battery_chargeable = min(battery_chargeable, max_charge_simple)
 
     if 4 < hour <= 17:
@@ -154,28 +165,22 @@ def soc_and_battery_usage(net_load, diesel_gen, n_dis, inv_eff, battery_size, n_
     if net_load > 0:
         if diesel_gen > 0:
             # If diesel generation is used, but is smaller than load, battery is discharged
-            soc = soc - net_load / n_dis / inv_eff / battery_size
+            soc -= net_load / n_dis / inv_eff / battery_size
         elif diesel_gen == 0:
             # If net load is positive and no diesel is used, battery is discharged
-            soc = soc - net_load / n_dis / battery_size
+            soc -= net_load / n_dis / battery_size  # ToDo inv_eff???
     elif net_load < 0:
         if diesel_gen > 0:
             # If diesel generation is used, and is larger than load, battery is charged
-            soc = soc - net_load * n_chg * inv_eff / battery_size
+            soc -= net_load * n_chg * inv_eff / battery_size
         if diesel_gen == 0:
             # If net load is negative, and no diesel has been used, excess PV gen is used to charge battery
-            soc = soc - net_load * n_chg / battery_size
+            soc -= net_load * n_chg / battery_size
 
-    # The amount of battery discharge in the hour is stored (measured in State Of Charge)
-    # if hour == 0: # ToDo check
-    #     battery_use = 0
-    #     dod = 0  # ToDo check
-
+    # Store how much battery energy was discharged (if used). No more than the previous SOC can be used
     if net_load > 0:
         hourly_battery_use = min(net_load / n_dis / battery_size, soc_prev)
-        battery_use = battery_use + min(net_load / n_dis / battery_size, soc_prev)
-    # else:
-    #     battery_use = battery_use + min(0, soc)  # Unneccessary?
+        battery_use += min(net_load / n_dis / battery_size, soc_prev)
 
     return battery_use, soc, dod, hourly_battery_use
 
@@ -187,19 +192,19 @@ def unmet_demand_and_excess_gen(unmet_demand, soc, n_dis, battery_size, n_chg, e
     if battery_size > 0:
         if soc < 0:
             # If State of charge is negative, that means there's demand that could not be met.
-            unmet_demand = unmet_demand - soc / n_dis * battery_size
+            unmet_demand -= soc / n_dis * battery_size
             soc = 0
 
         if soc > 1:
             # If State of Charge is larger than 1, that means there was excess PV/diesel generation
-            excess_gen = excess_gen + (soc - 1) / n_chg * battery_size
+            excess_gen += (soc - 1) / n_chg * battery_size
             soc = 1
     else:
         if remaining_load > 0:
-            unmet_demand = unmet_demand + remaining_load
+            unmet_demand += remaining_load
 
         if remaining_load < 0:
-            excess_gen = excess_gen - remaining_load
+            excess_gen -= remaining_load
 
     # If the depth of discharge in the hour is lower than...
     if 1 - soc > dod:
@@ -264,9 +269,10 @@ def hourly_optimization(battery_size, diesel_capacity, net_load, hour_numbers, i
 
 @numba.njit
 def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
-                          fuel_usage, pv_panel_size, pv_cost, charge_controller, pv_om, diesel_capacity, diesel_cost,
-                          diesel_om, inverter_life, load_curve, inverter_cost, diesel_life, pv_life, battery_life,
-                          battery_size, battery_cost, dod_max, discount_rate):
+                          fuel_usage, pv_panel_size, pv_cost, pv_life, pv_om, charge_controller, pv_inverter_cost,
+                          diesel_capacity, diesel_cost, diesel_om, diesel_life,
+                          battery_size, battery_cost, battery_life, battery_inverter_cost, battery_inverter_life,
+                          dod_max, load_curve, discount_rate):
 
     # Necessary information for calculation of LCOE is defined
     project_life = end_year - start_year
@@ -295,20 +301,20 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
         total_fuel_cost += fuel_costs / (1 + discount_rate) ** year
         total_om_cost += om_costs / (1 + discount_rate) ** year
 
-        if year % inverter_life == 0:
-            inverter_investment = max(load_curve) * inverter_cost  # Battery inverter
+        if year % battery_inverter_life == 0:
+            inverter_investment = max(load_curve) * battery_inverter_cost  # Battery inverter
         if year % diesel_life == 0:
             diesel_investment = diesel_capacity * diesel_cost
         if year % pv_life == 0:
-            pv_investment = pv_panel_size * (pv_cost + charge_controller + inverter_cost)  # PV inverter
+            pv_investment = pv_panel_size * (pv_cost + charge_controller + pv_inverter_cost)  # PV inverter
         if year % battery_life == 0:
             battery_investment = battery_size * battery_cost / dod_max
 
         if year == project_life:
             salvage = (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size / dod_max + \
                       (1 - (project_life % diesel_life) / diesel_life) * diesel_capacity * diesel_cost + \
-                      (1 - (project_life % pv_life) / pv_life) * pv_panel_size * (pv_cost + charge_controller + inverter_cost) + \
-                      (1 - (project_life % inverter_life) / inverter_life) * max(load_curve) * inverter_cost
+                      (1 - (project_life % pv_life) / pv_life) * pv_panel_size * (pv_cost + charge_controller + pv_inverter_cost) + \
+                      (1 - (project_life % battery_inverter_life) / battery_inverter_life) * max(load_curve) * battery_inverter_cost
 
             total_battery_investment -= (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size / dod_max
 
@@ -328,8 +334,8 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, energy_per_hh,
 
 
 def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
-                           energy_per_hh, diesel_price, end_year, start_year, pv_cost, charge_controller, pv_om,
-                           diesel_cost, diesel_om, inverter_life, inverter_cost, diesel_life, pv_life, battery_cost,
+                           energy_per_hh, diesel_price, end_year, start_year, pv_cost, charge_controller, pv_inverter, pv_om,
+                           diesel_cost, diesel_om, battery_inverter_life, battery_inverter_cost, diesel_life, pv_life, battery_cost,
                            discount_rate, lpsp_max, diesel_limit, full_life_cycles, simple=True):
 
     pv = configuration[0]
@@ -363,13 +369,14 @@ def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, i
                                                                                          pv_panel_size=pv,
                                                                                          pv_cost=pv_cost,
                                                                                          charge_controller=charge_controller,
+                                                                                         pv_inverter_cost=pv_inverter,
                                                                                          pv_om=pv_om,
                                                                                          diesel_capacity=diesel,
                                                                                          diesel_cost=diesel_cost,
                                                                                          diesel_om=diesel_om,
-                                                                                         inverter_life=inverter_life,
+                                                                                         battery_inverter_cost=battery_inverter_cost,
+                                                                                         battery_inverter_life=battery_inverter_life,
                                                                                          load_curve=load_curve,
-                                                                                         inverter_cost=inverter_cost,
                                                                                          diesel_life=diesel_life,
                                                                                          pv_life=pv_life,
                                                                                          battery_life=battery_life,
