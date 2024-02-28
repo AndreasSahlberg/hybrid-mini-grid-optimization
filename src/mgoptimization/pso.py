@@ -24,7 +24,7 @@ def optimizer(diesel_price,
               diesel_om=0.1,  # annual OM cost of diesel generator
               battery_inverter_cost=539,
               battery_inverter_life=20,
-              dod_max=0.9,  # maximum depth of discharge of battery
+              dod_max=0.8,  # maximum depth of discharge of battery
               inv_eff=0.93,  # inverter_efficiency
               lpsp_max=0.02,  # maximum loss of load allowed over the year, in share of kWh
               diesel_limit=0.5,
@@ -34,8 +34,9 @@ def optimizer(diesel_price,
               verbose=False,
               iterations=1000,
               n_particles=30,
-              ftol=0.005,
-              ftol_iter=5):
+              ftol=0.00001,
+              ftol_iter=100,
+              options={'c1': 0.5, 'c2': 0.3, 'w': 0.9}):
 
     demand = load_curve.sum()
 
@@ -48,8 +49,8 @@ def optimizer(diesel_price,
     bounds = (min_bounds, max_bounds)
 
     # The following lines set the search parameters for the PSO algorithm
-    options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9}
-    optimizer = ps.single.GlobalBestPSO(n_particles=n_particles, dimensions=3, options=options, bounds=bounds,
+
+    optimizer = ps.single.GlobalBesttPSO(n_particles=n_particles, dimensions=3, options=options, bounds=bounds,
                                         ftol=ftol, ftol_iter=ftol_iter)
 
     #  This creates a series of the hour numbers (0-24) for one year
